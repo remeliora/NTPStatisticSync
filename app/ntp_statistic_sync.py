@@ -1,78 +1,89 @@
-import subprocess
+import json
 import os
-from datetime import datetime
-from ftplib import FTP
+import datetime
+import subprocess
+import logging
 
-# Пути и FTP параметры
-log_path = "/path/to/logs/"
-file_prefix = "Ntpd"
-ftp_host = 'localhost'
-ftp_user = 'user'
-ftp_passwd = 'password'
-ftp_dir = '/remote/path/'
+# Чтение конфигурации
+with open("config.json") as config_file:
+    config = json.load(config_file)
 
-# Получение текущей даты и времени
-now = datetime.now()
+log_path = config["log_path"]
+file_prefix = config["file_prefix"]
+report_path = config["report_path"]
+report_file_prefix = config["report_file_prefix"]
+
+# Настройка логирования
+logging.basicConfig(
+    filename=os.path.join(log_path, "ntp_statistic_sync.log"),
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logging.info("Запуск скрипта синхронизации статистики NTP.")
+
+
+# Функция для выполнения команды и получения вывода
+def run_ntpq():
+    try:
+        result = subprocess.run(["ntpq", "-pn"], capture_output=True, text=True)
+        logging.info("Команда ntpq -pn выполнена успешно.")
+        return result.stdout
+    except Exception as e:
+        print(f"Ошибка при выполнении ntpq -pn: {e}")
+        logging.error(f"Ошибка при выполнении ntpq -pn: {e}")
+        return ""
+
+
+# Получаем текущие дату и время
+now = datetime.datetime.now()
+date_id = now.strftime("%Y%m%d")
 year_id = now.strftime("%Y")
 month_id = now.strftime("%m")
-day_id = now.strftime("%d")
-hour_id = now.strftime("%H")
-minute_id = now.strftime("%M")
+report_date = now.strftime("%Y-%m-%d %H:%M")
 
-# Формирование имен файлов
-daily_file = os.path.join(log_path, f"{year_id}-{month_id}-{day_id}_daily.log")
-monthly_file = os.path.join(log_path, f"{year_id}-{month_id}_monthly.log")
-yearly_file = os.path.join(log_path, f"{year_id}_yearly.log")
+# Определяем пути к файлам
+file_paths = {
+    "daily_path": os.path.join(log_path, year_id, month_id, f"{file_prefix}{date_id}.log"),
+    "month_path": os.path.join(log_path, year_id, month_id, f"{file_prefix}{date_id[:6]}.log"),
+    "year_path": os.path.join(log_path, year_id, f"{file_prefix}{date_id[:4]}.log"),
+    "month_to_report_path": os.path.join(log_path, "ActualData", f"{report_file_prefix}{date_id[:6]}.log"),
+    "day_to_report_path": os.path.join(log_path, "ActualDayData", f"{report_file_prefix}{date_id}.log"),
+    "short_ntpd_path": os.path.join(log_path, "ShortNtpd.log")
+}
+
+# Создаем каталоги, если их нет, и логируем только создание
+for path in file_paths.values():
+    dir_path = os.path.dirname(path)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+        logging.info(f"Каталог {dir_path} создан.")
+
+# Запись результатов NTP в файлы
+ntp_data = run_ntpq()
 
 
-# Функции
-def get_ntp_data():
+def write_to_file(file_path, data, append=True):
     try:
-        result = subprocess.run(['ntpq', '-pn'], capture_output=True, text=True, check=True)
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        print(f"Ошибка при выполнении ntpq -pn: {e}")
-        return None
-
-
-def write_to_file(file_path, data):
-    try:
-        with open(file_path, 'a') as f:
+        with open(file_path, "a" if append else "w") as f:
+            f.write(f"{report_date}\n")
             f.write(data)
-    except IOError as e:
-        print(f"Ошибка записи в файл {file_path}: {e}")
-
-
-def create_directories(path):
-    if not os.path.exists(path):
-        try:
-            os.makedirs(path)
-        except OSError as e:
-            print(f"Ошибка при создании директории {path}: {e}")
-
-
-def upload_to_ftp(host, user, passwd, file_path, ftp_dir):
-    try:
-        ftp = FTP(host)
-        ftp.login(user, passwd)
-        ftp.cwd(ftp_dir)
-
-        with open(file_path, 'rb') as file:
-            ftp.storbinary(f"STOR {os.path.basename(file_path)}", file)
-
-        ftp.quit()
-        print(f"Файл {file_path} успешно отправлен на FTP {host}")
+        logging.info(f"Записаны данные в файл {file_path}.")
     except Exception as e:
-        print(f"Ошибка при отправке файла на FTP: {e}")
+        logging.error(f"Ошибка при записи в файл {file_path}: {e}")
 
 
-# Основной процесс
-create_directories(log_path)
-ntp_data = get_ntp_data()
+# 1) В посуточный файл
+write_to_file(file_paths["daily_path"], ntp_data)
+# 2) В помесячный файл
+write_to_file(file_paths["month_path"], ntp_data)
+# 3) В годовой файл
+write_to_file(file_paths["year_path"], ntp_data)
+# 4) В файл для ежемесячных отчетов
+write_to_file(file_paths["month_to_report_path"], ntp_data)
+# 5) В оперативный короткий файл (один сеанс)
+write_to_file(file_paths["day_to_report_path"], ntp_data)
+# 6) В ежедневный проверочный файл
+write_to_file(file_paths["short_ntpd_path"], ntp_data, append=False)
 
-if ntp_data:
-    write_to_file(daily_file, ntp_data)
-    write_to_file(monthly_file, ntp_data)
-    write_to_file(yearly_file, ntp_data)
-
-upload_to_ftp(ftp_host, ftp_user, ftp_passwd, daily_file, ftp_dir)
+logging.info("Скрипт синхронизации статистики NTP завершён.")
