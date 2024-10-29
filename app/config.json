@@ -1,12 +1,9 @@
 {
   "log_path": "C:/NewMeinbergStatistic",
   "file_prefix": "ntpd(177)",
-  "report_path": "C:/NewMeinbergStatistic/FinalData",
   "report_file_prefix": "ntpd(km)",
   "actual_data_path": "C:/NewMeinbergStatistic/ActualData",
   "actual_day_data_path": "C:/NewMeinbergStatistic/ActualDayData",
-  "final_day_data_path": "C:/NewMeinbergStatistic/FinalDayData",
-  "short_log_file": "ShortNtpd.log",
-  "daily_cleanup_time": "00:00",
-  "monthly_cleanup_time": "00:00"
+  "final_data_path": "C:/NewMeinbergStatistic/FinalData",
+  "final_day_data_path": "C:/NewMeinbergStatistic/FinalDayData"
 }
