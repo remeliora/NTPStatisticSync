@@ -1,9 +1,11 @@
 {
-  "log_path": "C:/NewMeinbergStatistic",
+  "general_path": "C:/NewMeinbergStatistic",
   "file_prefix": "ntpd(177)",
   "report_file_prefix": "ntpd(km)",
   "actual_data_path": "C:/NewMeinbergStatistic/ActualData",
   "actual_day_data_path": "C:/NewMeinbergStatistic/ActualDayData",
   "final_data_path": "C:/NewMeinbergStatistic/FinalData",
-  "final_day_data_path": "C:/NewMeinbergStatistic/FinalDayData"
+  "final_day_data_path": "C:/NewMeinbergStatistic/FinalDayData",
+  "ntpd_drift_path": "C:/Program Files (x86)/NTP/etc",
+  "drift_statistic_path": "C:/NewMeinbergStatistic"
 }
