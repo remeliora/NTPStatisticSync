@@ -39,6 +39,8 @@ class NTPDataSync:
         self.file_paths = self.define_file_paths()
         self.ensure_final_directories()
 
+        self.ntp_servers = self.config.get("ntp_servers", [])
+
         self.ntpd_drift = Path(self.config["folders_path"]["ntpd_drift_path"])
         self.drift_statistic_path = Path(self.general_path / "NTP_DRIFT_STAT.txt")
 
@@ -216,6 +218,38 @@ class NTPDataSync:
 
             return ""
 
+    def verify_ntp_servers(self):
+        """
+        Проверяет, что все сервера из конфигурации присутствуют в списке опрашиваемых серверов.
+        Логирует предупреждения для каждого отсутствующего сервера.
+        """
+        ntp_data = self.run_ntpq()
+        if not ntp_data:
+            logging.error("Невозможно выполнить проверку серверов: отсутствуют данные от ntpq.")
+            return False
+
+        # Список опрашиваемых серверов из вывода ntpq
+        polled_servers = set()
+
+        for line in ntp_data.splitlines():
+            # Проверяем, является ли строка информацией о сервере
+            if line.startswith(("*", "o", "+", "-", " ")):
+                # Извлекаем IP-адрес (или имя хоста), игнорируя символы статуса
+                server_info = line.split()[0].lstrip("*o+- ")
+                polled_servers.add(server_info)
+
+        # Проверяем наличие каждого сервера из конфигурации
+        missing_servers = [server for server in self.ntp_servers if server not in polled_servers]
+
+        # Логируем отсутствующие сервера
+        if missing_servers:
+            for server in missing_servers:
+                logging.warning(f"Сервер {server} отсутствует в списке опрашиваемых серверов.")
+            return False
+
+        logging.info("Все указанные в конфигурации сервера присутствуют в списке опрашиваемых.")
+        return True
+
     def update_drift_stat(self):
         """
             Обновляет файл NTP_DRIFT_STAT.txt, добавляя текущие дату и время, а затем содержимое ntp.drift.
@@ -287,6 +321,9 @@ class NTPDataSync:
         # Получение данных из команды NTPQ
         ntp_data = self.run_ntpq()
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Проверка доступности серверов
+        self.verify_ntp_servers()
 
         # Запись данных в файлы
         for path_key in ["daily_path", "month_path", "year_path", "month_to_report_path", "day_to_report_path",
