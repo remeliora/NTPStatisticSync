@@ -3,7 +3,7 @@
     "ftp_host": "192.168.1.22",
     "ftp_user": "share",
     "ftp_pass": "Noatp23S",
-    "ftp_path": "/ftp/Receivers/ntpd_test/day"
+    "ftp_path": "/ftp/Receivers/test/ntpd/day"
   },
   "public_ftp": {
     "ftp_host": "ftp.vniiftri.ru",

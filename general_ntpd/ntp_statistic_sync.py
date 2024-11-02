@@ -2,10 +2,10 @@ import datetime
 import ftplib
 import json
 import logging
-import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 
 class NTPDataSync:
@@ -15,34 +15,36 @@ class NTPDataSync:
         финальные директории.
     """
 
-    def __init__(self, config_path=None, local_ftp_config_path=None):
+    def __init__(self, config_path=None, max_retries=3, retry_delay=5):
         """
             Инициализирует объект NTPDataSync. Загружает конфигурацию, настраивает логи, задает пути для файлов
             и проверяет существование финальных директорий.
         """
-        if config_path is None:
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-        if local_ftp_config_path is None:
-            local_ftp_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_ftp_config.json")
-
+        config_path = config_path or Path(__file__).parent / "common_config.json"
         self.config = self.load_json_config(config_path)
-        self.local_ftp_config = self.load_json_config(local_ftp_config_path)
+
+        self.general_path = Path(self.config["folders_path"]["general_path"])
+        self.setup_logging()
 
         if not self.config:
             logging.error(f"Основная конфигурация не найдена или пуста: {config_path}")
-        if not self.local_ftp_config:
-            logging.error(f"Конфигурация локального FTP не найдена или пуста: {local_ftp_config_path}")
-        self.general_path = self.config["general_path"]
-        self.setup_logging()
-        logging.info("Конфигурация загружена.")
+
+            return
+        else:
+            logging.info("Конфигурация загружена.")
+
         logging.info("Запуск синхронизации статистики NTPD.")
 
         self.report_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         self.file_paths = self.define_file_paths()
         self.ensure_final_directories()
 
-        self.ntpd_drift = self.config["ntpd_drift_path"]
-        self.drift_statistic_path = os.path.join(self.general_path, "NTP_DRIFT_STAT.txt")
+        self.ntpd_drift = Path(self.config["folders_path"]["ntpd_drift_path"])
+        self.drift_statistic_path = Path(self.general_path / "NTP_DRIFT_STAT.txt")
+
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.local_ftp = self.config["local_ftp"]
 
     @staticmethod
     def load_json_config(file_path):
@@ -52,38 +54,62 @@ class NTPDataSync:
         try:
             with open(file_path) as config_file:
                 return json.load(config_file)
+
         except FileNotFoundError:
             logging.error(f"Файл конфигурации не найден: {file_path}")
+
             return None
         except json.JSONDecodeError as e:
             logging.error(f"Ошибка в синтаксисе конфигурации JSON: {e}")
+
             return None
 
-    def upload_to_ftp(self, file_path):
+    def connect_to_ftp(self, ftp_config):
+        """
+            Подключение к FTP-серверу с повторными попытками.
+        """
+        attempt = 0
+        while attempt < self.max_retries:
+            try:
+                ftp = ftplib.FTP(ftp_config["ftp_host"])
+                ftp.login(ftp_config["ftp_user"], ftp_config["ftp_pass"])
+                logging.info(f"Подключение к {ftp_config['ftp_host']} установлено.")
+                return ftp
+
+            except ftplib.all_errors as e:
+                attempt += 1
+                logging.error(f"Ошибка подключения к {ftp_config['ftp_host']}: {e}")
+
+                if attempt < self.max_retries:
+                    logging.info(f"Повторная попытка подключения через {self.retry_delay} секунд...")
+                    time.sleep(self.retry_delay)
+        logging.error(f"Не удалось подключиться к {ftp_config['ftp_host']} после {self.max_retries} попыток.")
+
+        return None
+
+    def upload_file_to_ftp(self, ftp, file_path, ftp_path):
         """
             Загрузка файла на FTP-сервер.
         """
         try:
-            with ftplib.FTP(self.local_ftp_config["ftp_host"]) as ftp:
-                ftp.login(
-                    user=self.local_ftp_config["ftp_user"],
-                    passwd=self.local_ftp_config["ftp_pass"]
-                )
-                ftp.cwd(self.local_ftp_config["ftp_path"])
-                with open(file_path, "rb") as file:
-                    ftp.storbinary(f"STOR {os.path.basename(file_path)}", file)
-                logging.info(f"Файл {file_path} успешно отправлен на FTP-сервер.")
+            ftp.cwd(ftp_path)
+            logging.info(f"Текущий FTP-путь установлен на {ftp_path}.")
+
+            with open(file_path, "rb") as file:
+                ftp.storbinary(f"STOR {file_path.name}", file)
+                logging.info(f"Файл {file_path.name} загружен в {ftp_path}.")
+
         except ftplib.all_errors as e:
-            logging.error(f"Ошибка при отправке файла на FTP: {e}")
+            logging.error(f"Ошибка при загрузке файла {file_path} в {ftp_path}: {e}")
 
     def setup_logging(self):
         """
             Настраивает логирование: создает лог-файл для записи всех действий скрипта с указанным форматом.
         """
-        self.ensure_directory_exists(self.general_path)
-
+        self.general_path.mkdir(parents=True, exist_ok=True)
+        log_path = Path(self.general_path / "ntp_statistic_sync.log")
         logging.basicConfig(
-            filename=os.path.join(self.general_path, "ntp_statistic_sync.log"),
+            filename=log_path,
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s"
         )
@@ -97,83 +123,79 @@ class NTPDataSync:
         month_id = now.strftime("%m")
         year_id = now.strftime("%Y")
 
+        general_path = Path(self.general_path)
         return {
-            "daily_path": os.path.join(self.general_path, year_id, month_id,
-                                       f"{self.config['file_prefix']}{date_id}.log"),
-            "month_path": os.path.join(self.general_path, year_id, month_id,
-                                       f"{self.config['file_prefix']}{date_id[:6]}.log"),
-            "year_path": os.path.join(self.general_path, year_id, f"{self.config['file_prefix']}{date_id[:4]}.log"),
-            "month_to_report_path": os.path.join(self.config["actual_data_path"],
-                                                 f"{self.config['report_file_prefix']}{date_id[:6]}.log"),
-            "day_to_report_path": os.path.join(self.config["actual_day_data_path"],
-                                               f"{self.config['report_file_prefix']}{date_id}.log"),
-            "short_ntpd_path": os.path.join(self.general_path, "ShortNtpd.log"),
-            "final_day_path": os.path.join(self.config["final_day_data_path"],
-                                           f"{self.config['report_file_prefix']}{date_id}.log"),
-            "final_month_path": os.path.join(self.config["final_data_path"],
-                                             f"{self.config['report_file_prefix']}{date_id[:6]}.log")
+            "daily_path": general_path / year_id / month_id / f"{self.config['folders_path']['file_prefix']}{date_id}.log",
+            "month_path": general_path / year_id / month_id / f"{self.config['folders_path']['file_prefix']}{date_id[:6]}.log",
+            "year_path": general_path / year_id / f"{self.config['folders_path']['file_prefix']}{date_id[:4]}.log",
+            "month_to_report_path": Path(self.config["folders_path"][
+                                             "actual_data_path"]) / f"{self.config['folders_path']['report_file_prefix']}{date_id[:6]}.log",
+            "day_to_report_path": Path(self.config["folders_path"][
+                                           "actual_day_data_path"]) / f"{self.config['folders_path']['report_file_prefix']}{date_id}.log",
+            "short_ntpd_path": general_path / "ShortNtpd.log",
+            "final_day_path": Path(self.config["folders_path"][
+                                       "final_day_data_path"]) / f"{self.config['folders_path']['report_file_prefix']}{date_id}.log",
+            "final_month_path": Path(self.config["folders_path"][
+                                         "final_data_path"]) / f"{self.config['folders_path']['report_file_prefix']}{date_id[:6]}.log"
         }
 
     def ensure_final_directories(self):
         """
             Создает финальные директории, если они еще не существуют, для хранения данных за день и месяц.
         """
-        final_directories = [
-            self.config["final_day_data_path"],
-            self.config["final_data_path"]
-        ]
-        for path in final_directories:
-            self.ensure_directory_exists(path)
-
-    @staticmethod
-    def ensure_directory_exists(path):
-        """
-            Общий метод для проверки, существует ли указанный каталог. Если не существует, то создает его.
-        """
-        if not os.path.exists(path):
-            os.makedirs(path, exist_ok=True)
-            logging.info(f"Каталог {path} создан.")
+        for path in ["final_day_data_path", "final_data_path"]:
+            Path(self.config["folders_path"][path]).mkdir(parents=True, exist_ok=True)
 
     def check_and_restart_ntp_service(self):
         """
-            Проверяет выполнение команды ntpq -pn. Если команда неуспешна, перезапускает сервис NTP
-            и повторяет проверку.
+            Проверяет и при необходимости перезапускает службу NTP.
         """
         logging.info("Проверка состояния сервиса NTP.")
-        ntp_data = self.run_ntpq()
 
-        if not ntp_data or not ntp_data.strip():
-            logging.warning("Команда ntpq -pn завершилась с ошибкой. Перезапуск службы NTP...")
+        if not self.is_ntp_service_running():
+            logging.warning("Служба NTP не работает. Перезапуск...")
             self.restart_ntp_service()
-
-            # Ждем 10 секунд перед повторной проверкой
             time.sleep(10)
-            ntp_data = self.run_ntpq()
 
-            if ntp_data:
-                logging.info("Сервис NTP успешно перезапущен.")
+            if not self.is_ntp_service_running():
+                logging.error("Ошибка: не удалось перезапустить службу NTP.")
             else:
-                logging.error("Ошибка: Сервис NTP не удалось перезапустить.")
-
-            if ntp_data.strip():
-                logging.info("Целостность данных не нарушена.")
-            else:
-                logging.error("Ошибка: Сервис NTP возвращает пустые данные.")
+                logging.info("Служба NTP успешно перезапущена.")
         else:
             logging.info("Служба NTP работает корректно. Команда ntpq -pn выполнена успешно.")
 
+    def is_ntp_service_running(self):
+        """
+            Проверяет, возвращает ли команда ntpq -pn корректные данные.
+        """
+        ntp_data = self.run_ntpq()
+        if not ntp_data:
+            logging.error("Ошибка: Сбой в работе службы NTP.")
+
+            return False
+        elif not ntp_data.strip():
+            logging.error("Ошибка: NTP возвращает пустые данные.")
+
+            return False
+        return True
 
     def restart_ntp_service(self):
         """
             Перезапускает службу NTP с помощью командной строки Windows.
         """
         try:
-            subprocess.run(["net", "stop", "ntp"], check=True)
+            stop_result = subprocess.run(["net", "stop", "ntp"], check=True)
+            logging.info(f"Служба NTP остановлена, код возврата: {stop_result.returncode}")
+
             time.sleep(10)  # Ждем перед перезапуском
-            subprocess.run(["net", "start", "ntp"], check=True)
-            logging.info("Команда ntpq -pn выполнена успешно. Служба NTP перезапущена.")
+
+            start_result = subprocess.run(["net", "start", "ntp"], check=True)
+            logging.info(f"Служба NTP перезапущена, код возврата: {start_result.returncode}")
+
         except subprocess.CalledProcessError as e:
-            logging.error(f"Не удалось перезапустить службу NTP: {e}")
+            logging.error(f"Ошибка при перезапуске службы NTP. Код возврата: {e.returncode}, сообщение: {e}")
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка при перезапуске службы NTP: {e}")
 
     def run_ntpq(self):
         """
@@ -181,18 +203,24 @@ class NTPDataSync:
             Если произошла ошибка, возвращает пустую строку.
         """
         try:
-            result = subprocess.run(["ntpq", "-pn"], capture_output=True, text=True)
+            result = subprocess.run(["ntpq", "-pn"], capture_output=True, text=True, check=True)
             # logging.info("Команда ntpq -pn выполнена успешно. Служба NTP работает корректно.")
             return result.stdout
-        except Exception as e:
+
+        except subprocess.CalledProcessError as e:
             logging.error(f"Ошибка при выполнении ntpq -pn: {e}")
+
+            return ""
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка при выполнении ntpq -pn: {e}")
+
             return ""
 
     def update_drift_stat(self):
         """
             Обновляет файл NTP_DRIFT_STAT.txt, добавляя текущие дату и время, а затем содержимое ntp.drift.
         """
-        drift_file = os.path.join(self.ntpd_drift, "ntp.drift")
+        drift_file = self.ntpd_drift / "ntp.drift"
         date_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         try:
@@ -200,18 +228,20 @@ class NTPDataSync:
                 drift_stat.write(f"{date_time} xyz\n")
                 drift_stat.write(drift.read())
                 logging.info(f"Файл {self.drift_statistic_path} успешно обновлен.")
+
         except FileNotFoundError:
             logging.error(f"Файл ntp.drift не найден в {self.ntpd_drift}")
         except Exception as e:
             logging.error(f"Ошибка при обновлении {self.drift_statistic_path}: {e}")
 
     def write_to_file(self, file_path, data, date_time, append=True):
-        self.ensure_directory_exists(os.path.dirname(file_path))
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with open(file_path, "a" if append else "w") as f:
                 f.write(f"{date_time}\n")
                 f.write(data)
             logging.info(f"Записаны данные в файл {file_path}.")
+
         except Exception as e:
             logging.error(f"Ошибка при записи в файл {file_path}: {e}")
 
@@ -220,16 +250,16 @@ class NTPDataSync:
             Перемещает файл из источника в финальную директорию.
             Также удаляет старые файлы в папке назначения, кроме текущего.
         """
+        source_path = Path(source_path)
+        destination_path = Path(destination_path)
         try:
-            if os.path.exists(source_path):
-                self.ensure_directory_exists(os.path.dirname(destination_path))
-                shutil.move(source_path, destination_path)
+            if source_path.exists():
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source_path), str(destination_path))
                 logging.info(f"Перенос файла {source_path} в {destination_path} завершен.")
-                # Удаление старых файлов
-                if is_monthly:
-                    self.clean_final_directory(self.config["final_data_path"], exclude=[destination_path])
-                else:
-                    self.clean_final_directory(self.config["final_day_data_path"], exclude=[destination_path])
+                final_dir = Path(
+                    self.config["folders_path"]["final_data_path" if is_monthly else "final_day_data_path"])
+                self.clean_final_directory(final_dir, exclude={destination_path})
             else:
                 logging.warning(f"Файл {source_path} не найден для переноса.")
         except Exception as e:
@@ -239,13 +269,12 @@ class NTPDataSync:
         """
             Удаляет все файлы в указанной директории, кроме файлов, указанных в списке exclude.
         """
-        if exclude is None:
-            exclude = set()
-        for file in os.listdir(directory):
-            full_path = os.path.join(directory, file)
-            if full_path not in exclude and os.path.isfile(full_path):
-                os.remove(full_path)
-                logging.info(f"Удален файл {full_path} из директории {directory}")
+        exclude = exclude or set()
+        directory = Path(directory)
+        for file in directory.iterdir():
+            if file not in exclude and file.is_file():
+                file.unlink()
+                logging.info(f"Удален файл {file} из директории {directory}")
 
     def execute_sync(self):
         """
@@ -270,50 +299,56 @@ class NTPDataSync:
 
         # Ежемесячная проверка
         if now.day == 1 and now.hour == 0:  # Первый день нового месяца
-            self.rotate_monthly_file()
+            self.rotate_file(period="monthly")
 
         # Ежедневная проверка
         if now.hour == 0:  # Каждый день в полночь
-            self.rotate_daily_file()
+            self.rotate_file(period="daily")
 
         # Обновление NTP_DRIFT_STAT.txt
         self.update_drift_stat()
 
         # Отправка файла ShortNtpd.log на FTP
-        self.upload_to_ftp(self.file_paths["short_ntpd_path"])
+        logging.info("Выгрузка файла ShortNtpd.log на FTP началась.")
+        ftp = self.connect_to_ftp(self.local_ftp)
+        if ftp:
+            # Передаем файл непосредственно в функцию upload_to_ftp
+            self.upload_file_to_ftp(ftp, self.file_paths["short_ntpd_path"], self.local_ftp["ftp_path"])
 
-        logging.info("Скрипт синхронизации статистики NTPD завершён.")
-        logging.info("=" * 82)
+        logging.info("Скрипт синхронизации статистики NTPD завершён.\n" + "=" * 124)
 
-    def rotate_monthly_file(self):
-        previous_month = (datetime.datetime.now().replace(day=1) - datetime.timedelta(days=1)).strftime("%Y%m")
-        current_month = datetime.datetime.now().strftime("%Y%m")
+    def rotate_file(self, period):
+        """
+            Ротирует файлы данных на основе периода (ежедневный или ежемесячный).
+            Удаляет файлы за старые дни/месяцы и переносит текущий в финальную директорию.
+        """
+        previous_date, current_date, final_path, data_path = None, None, None, None
 
-        previous_month_path = os.path.join(self.config["actual_data_path"],
-                                           f"{self.config['report_file_prefix']}{previous_month}.log")
-        current_month_path = os.path.join(self.config["actual_data_path"],
-                                          f"{self.config['report_file_prefix']}{current_month}.log")
-        final_month_path = os.path.join(self.config["final_data_path"],
-                                        f"{self.config['report_file_prefix']}{previous_month}.log")
+        if period == "daily":
+            previous_date = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y%m%d")
+            current_date = datetime.datetime.now().strftime("%Y%m%d")
+            final_path = Path(self.config["folders_path"][
+                                  "final_day_data_path"]) / f"{self.config['folders_path']['report_file_prefix']}{previous_date}.log"
+            data_path = Path(self.config["folders_path"]["actual_day_data_path"])
+        elif period == "monthly":
+            previous_date = (datetime.datetime.now().replace(day=1) - datetime.timedelta(days=1)).strftime("%Y%m")
+            current_date = datetime.datetime.now().strftime("%Y%m")
+            final_path = Path(self.config["folders_path"][
+                                  "final_data_path"]) / f"{self.config['folders_path']['report_file_prefix']}{previous_date}.log"
+            data_path = Path(self.config["folders_path"]["actual_data_path"])
 
-        self.transfer_to_final(previous_month_path, final_month_path, is_monthly=True)
-        self.clean_final_directory(self.config["actual_data_path"], exclude=[current_month_path])
-        logging.info(f"Создание нового файла за месяц: {current_month_path}")
+        previous_path = data_path / f"{self.config['folders_path']['report_file_prefix']}{previous_date}.log"
+        current_path = data_path / f"{self.config['folders_path']['report_file_prefix']}{current_date}.log"
 
-    def rotate_daily_file(self):
-        previous_day = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y%m%d")
-        current_day = datetime.datetime.now().strftime("%Y%m%d")
+        # Переносим старый файл в финальную директорию
+        self.transfer_to_final(previous_path, final_path, is_monthly=(period == "monthly"))
+        # Удаляем старые файлы, кроме текущего
+        self.clean_final_directory(data_path, exclude=[current_path])
 
-        previous_day_path = os.path.join(self.config["actual_day_data_path"],
-                                         f"{self.config['report_file_prefix']}{previous_day}.log")
-        current_day_path = os.path.join(self.config["actual_day_data_path"],
-                                        f"{self.config['report_file_prefix']}{current_day}.log")
-        final_day_path = os.path.join(self.config["final_day_data_path"],
-                                      f"{self.config['report_file_prefix']}{previous_day}.log")
-
-        self.transfer_to_final(previous_day_path, final_day_path)
-        self.clean_final_directory(self.config["actual_day_data_path"], exclude=[current_day_path])
-        logging.info(f"Создание нового файла за день: {current_day_path}")
+        if period == "daily":
+            logging.info(f"Создание нового файла за день: {current_path}")
+        elif period == "monthly":
+            logging.info(f"Создание нового файла за месяц: {current_path}")
 
 
 # Запуск
