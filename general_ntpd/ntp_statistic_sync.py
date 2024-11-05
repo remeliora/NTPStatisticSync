@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from telegram_bot.telegram_bot import TelegramBot
 
 
 class NTPDataSync:
@@ -32,6 +33,8 @@ class NTPDataSync:
             return
         else:
             logging.info("Конфигурация загружена.")
+
+        self.telegram_bot = TelegramBot()
 
         logging.info("Запуск синхронизации статистики NTPD.")
 
@@ -85,7 +88,9 @@ class NTPDataSync:
                 if attempt < self.max_retries:
                     logging.info(f"Повторная попытка подключения через {self.retry_delay} секунд...")
                     time.sleep(self.retry_delay)
+        error_message = f"Не удалось подключиться к {ftp_config['ftp_host']} после {self.max_retries} попыток."
         logging.error(f"Не удалось подключиться к {ftp_config['ftp_host']} после {self.max_retries} попыток.")
+        self.telegram_bot.send_message(error_message)
 
         return None
 
@@ -102,7 +107,9 @@ class NTPDataSync:
                 logging.info(f"Файл {file_path.name} загружен в {ftp_path}.")
 
         except ftplib.all_errors as e:
+            error_message = f"Ошибка при загрузке файла {file_path} в {ftp_path}: {e}"
             logging.error(f"Ошибка при загрузке файла {file_path} в {ftp_path}: {e}")
+            self.telegram_bot.send_message(error_message)
 
     def setup_logging(self):
         """
@@ -155,14 +162,20 @@ class NTPDataSync:
         logging.info("Проверка состояния сервиса NTP.")
 
         if not self.is_ntp_service_running():
+            warning_message = f"Служба NTP не работает. Перезапуск..."
             logging.warning("Служба NTP не работает. Перезапуск...")
+            self.telegram_bot.send_message(warning_message)
             self.restart_ntp_service()
             time.sleep(10)
 
             if not self.is_ntp_service_running():
+                error_message = f"Ошибка: не удалось перезапустить службу NTP."
                 logging.error("Ошибка: не удалось перезапустить службу NTP.")
+                self.telegram_bot.send_message(error_message)
             else:
+                info_message = f"Служба NTP успешно перезапущена."
                 logging.info("Служба NTP успешно перезапущена.")
+                self.telegram_bot.send_message(info_message)
         else:
             logging.info("Служба NTP работает корректно. Команда ntpq -pn выполнена успешно.")
 
@@ -172,11 +185,15 @@ class NTPDataSync:
         """
         ntp_data = self.run_ntpq()
         if not ntp_data:
+            error_message = f"Ошибка: Сбой в работе службы NTP."
             logging.error("Ошибка: Сбой в работе службы NTP.")
+            self.telegram_bot.send_message(error_message)
 
             return False
         elif not ntp_data.strip():
+            error_message = f"Ошибка: NTP возвращает пустые данные."
             logging.error("Ошибка: NTP возвращает пустые данные.")
+            self.telegram_bot.send_message(error_message)
 
             return False
         return True
@@ -220,12 +237,14 @@ class NTPDataSync:
 
     def verify_ntp_servers(self):
         """
-        Проверяет, что все сервера из конфигурации присутствуют в списке опрашиваемых серверов.
-        Логирует предупреждения для каждого отсутствующего сервера.
+            Проверяет, что все сервера из конфигурации присутствуют в списке опрашиваемых серверов.
+            Логирует предупреждения для каждого отсутствующего сервера.
         """
         ntp_data = self.run_ntpq()
         if not ntp_data:
+            error_message = f"Невозможно выполнить проверку серверов: отсутствуют данные от ntpq."
             logging.error("Невозможно выполнить проверку серверов: отсутствуют данные от ntpq.")
+            self.telegram_bot.send_message(error_message)
             return False
 
         # Список опрашиваемых серверов из вывода ntpq
@@ -244,7 +263,9 @@ class NTPDataSync:
         # Логируем отсутствующие сервера
         if missing_servers:
             for server in missing_servers:
+                warning_message = f"Сервер {server} отсутствует в списке опрашиваемых серверов."
                 logging.warning(f"Сервер {server} отсутствует в списке опрашиваемых серверов.")
+                self.telegram_bot.send_message(warning_message)
             return False
 
         logging.info("Все указанные в конфигурации сервера присутствуют в списке опрашиваемых.")
@@ -264,9 +285,13 @@ class NTPDataSync:
                 logging.info(f"Файл {self.drift_statistic_path} успешно обновлен.")
 
         except FileNotFoundError:
+            error_message = f"Файл ntp.drift не найден в {self.ntpd_drift}"
             logging.error(f"Файл ntp.drift не найден в {self.ntpd_drift}")
+            self.telegram_bot.send_message(error_message)
         except Exception as e:
+            error_message = f"Ошибка при обновлении {self.drift_statistic_path}: {e}"
             logging.error(f"Ошибка при обновлении {self.drift_statistic_path}: {e}")
+            self.telegram_bot.send_message(error_message)
 
     def write_to_file(self, file_path, data, date_time, append=True):
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,7 +302,9 @@ class NTPDataSync:
             logging.info(f"Записаны данные в файл {file_path}.")
 
         except Exception as e:
+            error_message = f"Ошибка при записи в файл {file_path}: {e}"
             logging.error(f"Ошибка при записи в файл {file_path}: {e}")
+            self.telegram_bot.send_message(error_message)
 
     def transfer_to_final(self, source_path, destination_path, is_monthly=False):
         """
@@ -295,9 +322,13 @@ class NTPDataSync:
                     self.config["folders_path"]["final_data_path" if is_monthly else "final_day_data_path"])
                 self.clean_final_directory(final_dir, exclude={destination_path})
             else:
+                warning_message = f"Файл {source_path} не найден для переноса."
                 logging.warning(f"Файл {source_path} не найден для переноса.")
+                self.telegram_bot.send_message(warning_message)
         except Exception as e:
+            error_message = f"Ошибка при переносе файла {source_path} в {destination_path}: {e}"
             logging.error(f"Ошибка при переносе файла {source_path} в {destination_path}: {e}")
+            self.telegram_bot.send_message(error_message)
 
     def clean_final_directory(self, directory, exclude=None):
         """
