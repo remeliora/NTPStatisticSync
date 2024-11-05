@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from telegram_bot.telegram_bot import TelegramBot
 
 
 class FTPUploader:
@@ -29,6 +30,8 @@ class FTPUploader:
             return
         else:
             logging.info("Конфигурация загружена.")
+
+        self.telegram_bot = TelegramBot()
 
         logging.info("Запуск отправки статистики NTPD.")
 
@@ -87,7 +90,9 @@ class FTPUploader:
                 if attempt < self.max_retries:
                     logging.info(f"Повторная попытка подключения через {self.retry_delay} секунд...")
                     time.sleep(self.retry_delay)
+        error_message = f"Не удалось подключиться к {ftp_config['ftp_host']} после {self.max_retries} попыток."
         logging.error(f"Не удалось подключиться к {ftp_config['ftp_host']} после {self.max_retries} попыток.")
+        self.telegram_bot.send_message(error_message)
 
         return None
 
@@ -104,11 +109,14 @@ class FTPUploader:
                     with open(file_path, "rb") as file:
                         ftp.storbinary(f"STOR {file_path.name}", file)
                         logging.info(f"Файл {file_path.name} загружен в {ftp_path}.")
-
-            logging.info(f"Загрузка файлов в {ftp_path} завершена успешно.")
+            info_message = f"Загрузка файлов в {ftp_path} успешно завершена."
+            logging.info(f"Загрузка файлов в {ftp_path} успешно завершена.")
+            self.telegram_bot.send_message(info_message)
 
         except ftplib.all_errors as e:
+            error_message = f"Ошибка при загрузке файлов в {ftp_path}: {e}"
             logging.error(f"Ошибка при загрузке файлов в {ftp_path}: {e}")
+            self.telegram_bot.send_message(error_message)
 
     def execute_transfer(self):
         """

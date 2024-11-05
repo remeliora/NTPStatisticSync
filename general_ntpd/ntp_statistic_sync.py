@@ -38,7 +38,7 @@ class NTPDataSync:
 
         logging.info("Запуск синхронизации статистики NTPD.")
 
-        self.report_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.report_date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         self.file_paths = self.define_file_paths()
         self.ensure_final_directories()
 
@@ -252,9 +252,9 @@ class NTPDataSync:
 
         for line in ntp_data.splitlines():
             # Проверяем, является ли строка информацией о сервере
-            if line.startswith(("*", "o", "+", "-", " ")):
+            if line.startswith(("*", "o", "+", "-", " ", "x", "#")):
                 # Извлекаем IP-адрес (или имя хоста), игнорируя символы статуса
-                server_info = line.split()[0].lstrip("*o+- ")
+                server_info = line.split()[0].lstrip("*o+- x#")
                 polled_servers.add(server_info)
 
         # Проверяем наличие каждого сервера из конфигурации
@@ -276,7 +276,7 @@ class NTPDataSync:
             Обновляет файл NTP_DRIFT_STAT.txt, добавляя текущие дату и время, а затем содержимое ntp.drift.
         """
         drift_file = self.ntpd_drift / "ntp.drift"
-        date_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        date_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
         try:
             with open(self.drift_statistic_path, "a") as drift_stat, open(drift_file) as drift:
@@ -351,7 +351,7 @@ class NTPDataSync:
 
         # Получение данных из команды NTPQ
         ntp_data = self.run_ntpq()
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
         # Проверка доступности серверов
         self.verify_ntp_servers()
