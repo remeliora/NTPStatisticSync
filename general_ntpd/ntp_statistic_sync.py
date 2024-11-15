@@ -366,11 +366,11 @@ class NTPDataSync:
         now = datetime.datetime.now()
 
         # Ежемесячная проверка
-        if now.day == 1 and now.hour == 0:  # Первый день нового месяца
+        if now.day == 1 and now.hour == 0 and 0 <= now.minute < 10:  # Первый день нового месяца
             self.rotate_file(period="monthly")
 
         # Ежедневная проверка
-        if now.hour == 0:  # Каждый день в полночь
+        if now.hour == 0 and 0 <= now.minute < 10:  # Каждый день в полночь
             self.rotate_file(period="daily")
 
         # Обновление NTP_DRIFT_STAT.txt
@@ -415,8 +415,10 @@ class NTPDataSync:
 
         if period == "daily":
             logging.info(f"Создание нового файла за день: {current_path}")
+            self.telegram_bot.send_message(f"Суточный файл сформирован")
         elif period == "monthly":
             logging.info(f"Создание нового файла за месяц: {current_path}")
+            self.telegram_bot.send_message(f"Месячный файл сформирован")
 
 
 # Запуск
