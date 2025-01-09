@@ -6,3 +6,4 @@ telegram_bot/telegram_bot_config.json
 telegram_bot/telegram_bot.log
 telegram_bot/test_config.json
 requirements.txt
+.gitignore

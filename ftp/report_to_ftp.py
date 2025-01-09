@@ -127,10 +127,13 @@ class FTPUploader:
         # Ежемесячная отправка
         if now.day == 1 and now.hour == 10:
             logging.info("Ежемесячная загрузка началась.")
-            year_str = now.strftime("%Y")
+            # Если это январь, используем предыдущий год для файлов за декабрь
+            year_str = str(now.year - 1) if now.month == 1 else str(now.year)
             dynamic_ftp_path = self.public_ftp["ftp_path_template"].format(year=year_str)
+
             ftp = self.connect_to_ftp(self.public_ftp)
             if ftp:
+                self.create_ftp_directory_if_not_exists(ftp, dynamic_ftp_path)  # Проверяем и создаём папку для года
                 self.upload_files(ftp, self.final_data_path, dynamic_ftp_path)
                 ftp.quit()
 
@@ -143,6 +146,26 @@ class FTPUploader:
                 ftp.quit()
 
         logging.info("Процесс передачи файлов завершён.\n" + "=" * 124)
+
+    def create_ftp_directory_if_not_exists(self, ftp, directory):
+        """
+            Проверяет, существует ли указанная директория на FTP-сервере, и создаёт её при необходимости.
+        """
+        try:
+            ftp.cwd(directory)
+            # logging.info(f"Директория {directory} уже существует на FTP-сервере.")
+        except ftplib.error_perm as e:
+            if str(e).startswith("550"):  # Ошибка "550: Directory not found"
+                logging.warning(f"Директория {directory} отсутствует. Создаём...")
+                try:
+                    ftp.mkd(directory)
+                    logging.info(f"Директория {directory} успешно создана.")
+                except ftplib.all_errors as mkdir_error:
+                    logging.error(f"Не удалось создать директорию {directory}: {mkdir_error}")
+                    self.telegram_bot.send_message(f"Ошибка создания директории {directory}: {mkdir_error}")
+            else:
+                logging.error(f"Ошибка при проверке директории {directory}: {e}")
+                self.telegram_bot.send_message(f"Ошибка при проверке директории {directory}: {e}")
 
 
 uploader = FTPUploader()
